@@ -1,0 +1,16 @@
+# HTTPS (TLS 443) 生产覆写编排文件
+# 使用前提：
+#   1. 将 SSL 证书放置到 ./deploy/certs/fullchain.pem 与 ./deploy/certs/privkey.pem；
+#   2. 复制 deploy/nginx-tls.conf.example 为 deploy/nginx-tls.conf 并替换 server_name 为实际已备案域名；
+#   3. 启动命令：
+#      docker compose -f docker-compose.yml -f deploy/docker-compose.tls.yml --profile full up -d --build
+
+services:
+  nginx:
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx-tls.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/certs:/etc/nginx/certs:ro
+      - ./frontend/dist:/usr/share/nginx/html:ro

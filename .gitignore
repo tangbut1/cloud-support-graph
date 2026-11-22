@@ -1,0 +1,44 @@
+# 环境变量与密钥（严禁提交真实值）
+.env
+.env.*
+!.env.example
+deploy/certs/
+deploy/*.pem
+deploy/*.key
+deploy/nginx-tls.conf
+
+# Python 环境与缓存
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# 本地数据库与运行时数据
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.sqlite*
+data/uploads/
+*.log
+
+# 前端依赖与构建产物
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# 编辑器与系统临时文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 报告素材里的调试中间产物（文件保留在本地，不入库）
+docs/report-assets/_capture_test.png
+docs/report-assets/**/diag-*.png

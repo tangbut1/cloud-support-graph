@@ -1,0 +1,14 @@
+$ $env:ENABLE_DEMO_LOGIN='false'  # 生产默认关闭免密登录，E2E 走标准账号密码登录
+$ cd backend && .\.venv\Scripts\python.exe -m pytest ..\e2e\test_e2e_flows.py -v
+
+============================= test session starts =============================
+platform win32 -- Python 3.12.7, pytest-9.2.0, pluggy-1.7.0
+rootdir: D:\软件项目和论文\cloud-support-graph
+plugins: anyio-4.16.0, langsmith-0.15.0, asyncio-1.5.0
+collecting ... collected 3 items
+
+..\e2e\test_e2e_flows.py::test_e2e_01_customer_kb_qa_with_citations PASSED [ 33%]
+..\e2e\test_e2e_flows.py::test_e2e_02_hitl_diagnose_suspend_approve_ticket PASSED [ 66%]
+..\e2e\test_e2e_flows.py::test_e2e_03_idor_and_refund_security_rejection PASSED [100%]
+
+============================= 3 passed in 20.50s ==============================

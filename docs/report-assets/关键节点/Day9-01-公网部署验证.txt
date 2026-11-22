@@ -1,0 +1,8 @@
+$ python deploy/verify_public.py http://<YOUR_SERVER_IP>
+
+[1/6] GET http://<YOUR_SERVER_IP>/api/health -> 200 OK  ({"status": "ok", "app": "cloud-support-graph", "env": "production", "db_path": "/app/data/app.db", "db_exists": true})
+[2/6] 免密 demo-login 已拦截 (403) + 公开弱口令已失效 (401)；四角色标准强口令登录 -> 全部 200 OK
+[3/6] 公网 SSE 问答（命中引用 kb_answer）与超范围提问（严格拒答 kb_refuse） -> 通过
+[4/6] 故障诊断 -> 挂起 -> 坐席批准建单闭环 -> 通过（生成工单 CSG-20261121-0001）
+[5/6] 跨租户隔离（李四访问张三会话消息） -> 404 Not Found（不泄露存在性）
+[6/6] 公网首页浏览器访问与截图 (http://<YOUR_SERVER_IP>/login) -> 通过（已保存 Day9-02-公网首页截图.png）

@@ -1,0 +1,21 @@
+$ # Day 6 实测 2：坐席待接管队列 -> 审批恢复 LangGraph 断点 -> 原子建单 -> 人工回复关单
+
+[1] GET /api/agent/queue (坐席王工) -> 待接管数: 1
+    conversation_id : 682a1272-9e1c-4bfc-877c-bbc019ae01cc
+    customer_name   : 客户张三
+    diagnosis       : 以下后端进程处于停止状态：backend-8080；服务端口 8080（来自 backend-8080）未在安全组放行列表中，当前放行端口为 [22, 80, 443]。 Nginx 作为反向代理会因连不上后端而返回 502，属于典型的'后端进程停止 + 端口未放行'叠加故障。
+    draft_ticket    : {"title": "ubuntu-web-prod 故障诊断：SERVICE_STOPPED", "summary": "以下后端进程处于停止状态：backend-8080；服务端口 8080（来自 backend-8080）未在安全组放行列表中，当前放行端口为 [22, 80, 443]。 Nginx 作为反向代理会因连不上后端而返回 502，属于典型的'后端进程停止 + 端口未放行'叠加故障。", "category": "应用服务", "priority": "P2", "instance_id": 1, "instance_name": "ubuntu-web-prod", "customer_id": 1}
+
+[2] POST /api/agent/conversations/682a1272.../resume -> 200 (169.0 ms)
+    conversation_status : human_handling
+    ticket_no           : CSG-20261120-0001
+    message             : 已完成处理：工单 CSG-20261120-0001 已创建，坐席备注：已核实 8080 进程停止且端口未放行，批准建单。请按建议动作处理后回复本工单。
+
+[3] POST /api/agent/conversations/682a1272.../reply (close=False)
+    message_id=7  conversation_status=human_handling
+[4] 客户在 human_handling 下发消息 -> 直通人工不调 AI: event: done | data: {"message_id": 8, "decision_type": "human_passthrough", "trace_id": null, "conversation_status": "human_handling"}
+[5] POST /api/agent/conversations/682a1272.../reply (close=True)
+    message_id=9  conversation_status=closed
+
+[6] 客户张三 GET /api/tickets -> 共 1 条：
+    CSG-20261120-0001 | OPEN | P2 | ubuntu-web-prod 故障诊断：SERVICE_STOPPED

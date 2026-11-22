@@ -1,0 +1,49 @@
+name: cloud-support-graph
+
+# 本地开发用法：
+#   只起后端（当前阶段）        docker compose up -d --build
+#   前后端一起（前端 dist 就绪后） docker compose --profile full up -d --build
+#   看日志                      docker compose logs -f backend
+#   停                          docker compose down
+
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: csg-backend
+    env_file:
+      - ./.env
+    environment:
+      # 容器内用绝对路径覆盖 .env 里的相对路径
+      APP_DB_PATH: /app/data/app.db
+      CHECKPOINT_DB_PATH: /app/data/checkpoints.db
+    volumes:
+      - ./data:/app/data          # 两个 .db 落在宿主机，容器重建不丢数据
+    ports:
+      - "127.0.0.1:8000:8000"     # 仅本机可访问，避免开发机暴露公网
+    mem_limit: 700m               # 2C2G 机器的内存预算（后端 ~200MB 实际占用）
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health').status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: csg-nginx
+    profiles: ["full"]            # 前端 dist 就绪后再启用
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./frontend/dist:/usr/share/nginx/html:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

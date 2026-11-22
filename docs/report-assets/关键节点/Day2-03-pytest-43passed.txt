@@ -1,0 +1,24 @@
+PS D:\软件项目和论文\cloud-support-graph\backend> pytest tests/test_ticket_sm.py -v --no-header
+============================= test session starts =============================
+collecting ... collected 13 items
+
+tests/test_ticket_sm.py::test_all_declared_transitions_are_valid PASSED  [  7%]
+tests/test_ticket_sm.py::test_open_cannot_jump_to_closed PASSED          [ 15%]
+tests/test_ticket_sm.py::test_unknown_status_is_rejected PASSED          [ 23%]
+tests/test_ticket_sm.py::test_closed_is_terminal PASSED                  [ 30%]
+tests/test_ticket_sm.py::test_resolved_can_be_reopened PASSED            [ 38%]
+tests/test_ticket_sm.py::test_create_ticket_starts_as_open_with_first_event PASSED [ 46%]
+tests/test_ticket_sm.py::test_ticket_no_is_daily_sequential PASSED       [ 53%]
+tests/test_ticket_sm.py::test_create_ticket_rejects_foreign_instance PASSED [ 61%]
+tests/test_ticket_sm.py::test_valid_transition_updates_status_and_writes_event PASSED [ 69%]
+tests/test_ticket_sm.py::test_full_lifecycle_open_to_closed PASSED       [ 76%]
+tests/test_ticket_sm.py::test_illegal_transition_leaves_database_untouched PASSED [ 84%]
+tests/test_ticket_sm.py::test_transition_on_missing_ticket_raises_not_found PASSED [ 92%]
+tests/test_ticket_sm.py::test_closed_ticket_rejects_further_transitions PASSED [100%]
+
+============================= 13 passed in 4.78s ==============================
+
+
+PS D:\软件项目和论文\cloud-support-graph\backend> pytest -q
+...........................................                              [100%]
+43 passed in 16.47s

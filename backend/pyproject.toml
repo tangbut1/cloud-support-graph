@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloud-support-graph"
+version = "0.1.0"
+description = "基于多智能体图编排与 MCP 协议的云服务技术支持与工单协作系统"
+readme = { text = "cloud-support-graph backend (FastAPI + LangGraph + FastMCP)", content-type = "text/markdown" }
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27.0",
+    "aiosqlite>=0.20.0",
+    "PyJWT>=2.9.0",
+    "bcrypt>=4.1.0",
+    "jieba>=0.42.1",
+    "langgraph>=0.2.60",
+    "langgraph-checkpoint-sqlite>=2.0.0",
+    "langchain-core>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "mcp>=1.2.0",
+    "langchain-mcp-adapters>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "playwright>=1.48.0",
+    "ruff>=0.7.0",
+]
+observability = [
+    "langfuse>=2.50.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+"app.eval" = ["*.jsonl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# 显式声明异步 fixture 的 event loop 作用域，消掉 pytest-asyncio 的 DeprecationWarning
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["."]

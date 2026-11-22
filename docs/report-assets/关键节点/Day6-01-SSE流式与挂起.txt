@@ -1,0 +1,21 @@
+$ # Day 6 实测 1：SSE 流式问答（真实模型）+ 多模态报错截图 + 严重故障挂起
+
+[1] POST /api/conversations -> 201  id=23764703...  status=ai_handling
+    SSE 事件流: status -> status -> citations -> status -> done (+ 57 token chunks)
+    首字节(TTFB): 32.4 ms | 首 Token: 9584.7 ms | 总耗时: 11320.5 ms
+    检索命中: top_score=0.787  citations=['[Nginx 返回 502 Bad Gateway 排查 · 现象]', '[Nginx 返回 502 Bad Gateway 排查 · 原因]', '[Nginx 返回 502 Bad Gateway 排查 · 修复方式]', '[Nginx 返回 502 Bad Gateway 排查 · 排查步骤]']
+    回答节选: ## Nginx 502 排查建议  **第一步：确认现象** 浏览器显示 502，同时 Nginx 的 access.log 有访问记录，error.log 中出现 `connect() failed (111: Connection refused) wh...
+    done: decision=kb_answer trace_id=1 status=ai_handling
+
+[2] POST /api/conversations/23564895.../chat/stream  (多模态截图 PNG, 19906 B)
+    视觉识别耗时: 13546.5 ms | 图文端到端总耗时: 13840.7 ms
+    检索命中: top_score=0.300  citations=['[Nginx 返回 502 Bad Gateway 排查 · 排查步骤]', '[安全组端口未放行导致外部无法访问 · 排查步骤]', '[Nginx 返回 502 Bad Gateway 排查 · 现象]', '[安全组端口未放行导致外部无法访问 · 现象]']  decision=kb_refuse
+    回答节选: 当前官方文档库未覆盖该问题（最高相关度 0.30，低于阈值 0.35）。为避免给出不准确的信息，建议转人工坐席或提交工单进一步核查。...
+
+[3] POST /api/conversations/682a1272.../chat/stream  (工具诊断 + 挂起)
+    SSE 事件流: status -> status -> status -> interrupt -> done  (耗时 151.7 ms)
+    interrupt.type     = human_approval
+    interrupt.question = 是否批准创建工单并回复客户？
+    handoff.instance   = ubuntu-web-prod
+    draft_ticket.title = ubuntu-web-prod 故障诊断：SERVICE_STOPPED
+    done.status        = pending_human
