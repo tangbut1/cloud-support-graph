@@ -29,8 +29,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RepoRoot = (Resolve-Path "$PSScriptRoot\..").Path
-$TarPath = Join-Path $env:TEMP "csg-deploy.tar.gz"
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$TempDir = [System.IO.Path]::GetTempPath()
+$TarPath = Join-Path $TempDir "csg-deploy.tar.gz"
 $SshOpts = @("-o", "StrictHostKeyChecking=yes")
 
 function Assert-ExitZero([string]$StepName) {
@@ -255,7 +256,7 @@ if ($UploadEnv) {
 Write-Host "[4/5] 通过安全文件传输写入远程脚本并执行生产闸门校验与 Docker Compose 启动 ($ComposeFlags)..." -ForegroundColor Cyan
 # 不通过 ssh 命令行参数传递多行脚本（Windows PowerShell 5.1 会剥离原生参数中的双引号），
 # 而是先以 UTF-8 无 BOM + LF 落盘并通过 scp 原样传输后在远端 bash 执行
-$RemoteScriptLocalPath = Join-Path $env:TEMP "csg-remote-deploy.sh"
+$RemoteScriptLocalPath = Join-Path $TempDir "csg-remote-deploy.sh"
 [System.IO.File]::WriteAllText(
     $RemoteScriptLocalPath,
     $RemoteScript + "`n",

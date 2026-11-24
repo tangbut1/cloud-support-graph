@@ -1017,7 +1017,7 @@ def test_deploy_script_dry_run_renders_valid_bash():
     import subprocess
     from pathlib import Path
 
-    ps = shutil.which("powershell")
+    ps = shutil.which("powershell") or shutil.which("pwsh")
     if not ps:
         pytest.skip("无 PowerShell 环境")
     repo_root = Path(__file__).resolve().parents[2]

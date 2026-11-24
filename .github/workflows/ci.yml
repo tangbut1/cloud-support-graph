@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-tests-and-eval:
+    name: Backend Pytest & Retrieval Eval Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install backend & test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run offline deterministic pytest suite
+        env:
+          LLM_BASE_URL: ""
+          LLM_API_KEY: ""
+          LLM_MODEL_NAME: ""
+        run: pytest -q --tb=short
+
+      - name: Run 18-case retrieval threshold A/B gate
+        run: |
+          python -m app.eval.ab_threshold --thresholds 0.30,0.35,0.45 --json > /tmp/ab_results.json
+          python -c '
+          import json
+          rows = {r["threshold"]: r for r in json.load(open("/tmp/ab_results.json", encoding="utf-8"))}
+          gate = rows[0.35]
+          assert gate["answerable_rate"] == 1.0, f"Expected 100% answerable pass at 0.35, got {gate}"
+          assert gate["refusal_rate"] == 1.0, f"Expected 100% refusal pass at 0.35, got {gate}"
+          assert gate["overall_acc"] == 1.0, f"Expected 100% overall accuracy at 0.35, got {gate}"
+          '
+          {
+            echo "### Retrieval Threshold A/B Regression Gate (18 KB Cases)"
+            echo ""
+            echo '```text'
+            python -m app.eval.ab_threshold --thresholds 0.30,0.35,0.45
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify rendered deployment shell script syntax
+        working-directory: .
+        run: |
+          pwsh -File ./deploy/deploy_aliyun.ps1 -DryRun > /tmp/remote_deploy_http.sh
+          bash -n /tmp/remote_deploy_http.sh
+          pwsh -File ./deploy/deploy_aliyun.ps1 -DryRun -EnableTls -PublicDomain support.example.com > /tmp/remote_deploy_tls.sh
+          bash -n /tmp/remote_deploy_tls.sh
+
+  frontend-build:
+    name: Frontend Typecheck & Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies & build production bundle
+        run: |
+          npm ci
+          npm run build
