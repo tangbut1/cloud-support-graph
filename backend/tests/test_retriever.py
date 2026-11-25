@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from app.services.kb_indexer import index_all
-from app.services.retriever import UNSUPPORTED_TOPIC_CAP, search
+from app.services.retriever import UNSUPPORTED_TOPIC_CAP, search, strip_transient_log_noise
 
 
 @pytest.fixture()
@@ -127,3 +127,51 @@ def test_threshold_override_can_force_refusal(kb):
 def test_threshold_override_can_force_acceptance(kb):
     result = search(kb, "云服务器能不能免费升级到 8C16G", min_score=0.1)
     assert result.accepted is True          # 阈值放低就会放行（说明是阈值在起作用）
+
+
+# ===========================================================================
+# 五、多模态报错截图与运行态日志瞬态噪点去噪（Day 6 误拒答 Badcase 回归）
+# ===========================================================================
+def test_strip_transient_log_noise_preserves_error_codes_and_ports():
+    raw = (
+        "请看截图\n<untrusted_screenshot_ocr>\n"
+        "2026/11/20 14:32:09 [error] 24518#0: *109 connect() failed "
+        "upstream: http://47.94.101.23:8080/api/v1/orders nginx/1.24.0 req_id=8f9afcd12b\n"
+        "</untrusted_screenshot_ocr>"
+    )
+    cleaned = strip_transient_log_noise(raw)
+    assert "untrusted_screenshot_ocr" not in cleaned
+    assert "47.94.101.23" not in cleaned
+    assert "orders" not in cleaned
+    assert "24518" not in cleaned
+    assert "1.24.0" not in cleaned
+    assert "8f9afcd12b" not in cleaned
+    assert "8080" in cleaned
+    assert "nginx" in cleaned
+
+
+def test_noisy_ocr_screenshot_query_is_accepted_instead_of_false_capped(kb):
+    noisy_ocr_query = (
+        "这张报错截图怎么排查\n\n"
+        "<untrusted_screenshot_ocr>\n"
+        "502 Bad Gateway nginx/1.24.0 (Ubuntu 22.04.3 LTS) "
+        "2026/11/20 14:32:09 [error] 24518#0: *109 connect() failed (111: Connection refused) "
+        "while connecting to upstream http://47.94.101.23:8080/api/orders pid=18492\n"
+        "</untrusted_screenshot_ocr>"
+    )
+    result = search(kb, noisy_ocr_query)
+    assert result.accepted is True, f"去噪后应命中知识库而非封顶拒答: top_score={result.top_score}, tokens={result.tokens}"
+    assert result.top_score >= result.threshold
+    assert "502" in result.hits[0].doc_title
+
+
+def test_unsupported_topic_inside_ocr_screenshot_is_still_capped_and_refused(kb):
+    unsupported_ocr_query = (
+        "这张报错截图怎么解决\n\n"
+        "<untrusted_screenshot_ocr>\n"
+        "OceanBase OB-4016 internal error at 47.94.101.23:2881 2026-11-20T14:32:09Z pid=19022\n"
+        "</untrusted_screenshot_ocr>"
+    )
+    result = search(kb, unsupported_ocr_query)
+    assert result.top_score <= UNSUPPORTED_TOPIC_CAP + 1e-6
+    assert result.accepted is False

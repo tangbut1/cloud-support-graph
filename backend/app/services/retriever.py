@@ -62,6 +62,29 @@ _STOPWORDS = {
 _TECH_TOKEN_RE = re.compile(r"[A-Za-z0-9]")
 UNSUPPORTED_TOPIC_CAP = 0.30
 
+# 检索前置去噪：剥离多模态隔离标签与日志运行态瞬态噪点（URL路径 / 时间戳 / IPv4 / PID / 补丁版本号 / 十六进制请求ID），
+# 保留核心错误码、协议与端口（如 502 / 8080 / 443 / https），避免报错截图或终端日志中的机器坐标误触 0.30 封顶。
+_OCR_TAG_RE = re.compile(r"</?untrusted_screenshot_ocr>", re.IGNORECASE)
+_URL_RE = re.compile(
+    r"\b(https?)://([A-Za-z0-9.\-]+)(?::(\d{2,5}))?(?:/[^\s\"'<>)\]]*)?",
+    re.IGNORECASE,
+)
+_TIMESTAMP_RE = re.compile(
+    r"\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?:[T\s]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?Z?)?\b"
+    r"|\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?\b"
+)
+_IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b")
+_PID_CONN_RE = re.compile(
+    r"\b\d+#\d+\b|\*\d+\b|\b(?:pid|tid)[\s:=#]*\d+\b",
+    re.IGNORECASE,
+)
+_VERSION_RE = re.compile(
+    r"(?<=[A-Za-z/_\-\s(])v?\d+\.\d+(?:\.\d+)?(?:[a-zA-Z0-9.\-]+)?\b"
+    r"|\bv\d+\.\d+(?:\.\d+)?\b"
+)
+_HEX_ID_RE = re.compile(r"\b(?=[0-9a-fA-F]*\d)(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{7,}\b")
+_NOISE_ENV_WORDS = {"ubuntu", "debian", "centos", "almalinux", "rockylinux", "lts"}
+
 
 @dataclass
 class RetrievalHit:
@@ -101,11 +124,28 @@ class RetrievalResult:
 # ---------------------------------------------------------------------------
 # 内部工具
 # ---------------------------------------------------------------------------
+def strip_transient_log_noise(query: str) -> str:
+    """剥离多模态隔离标签与日志中的瞬态运行坐标，保留错误码、服务名与端口号。"""
+    if not query:
+        return ""
+    text = _OCR_TAG_RE.sub(" ", query)
+    text = _URL_RE.sub(
+        lambda m: f" {m.group(1)} {m.group(3) or ''} ",
+        text,
+    )
+    text = _TIMESTAMP_RE.sub(" ", text)
+    text = _IPV4_RE.sub(" ", text)
+    text = _PID_CONN_RE.sub(" ", text)
+    text = _VERSION_RE.sub(" ", text)
+    text = _HEX_ID_RE.sub(" ", text)
+    return text
+
+
 def _meaningful_tokens(query: str) -> list[str]:
-    """分词后去掉虚词与单字噪声，得到用于检索的实词。"""
+    """去噪并分词后去掉虚词、发行版横幅词与单字噪声，得到用于检索的实词。"""
     tokens: list[str] = []
-    for token in segment(query):
-        if token in _STOPWORDS:
+    for token in segment(strip_transient_log_noise(query)):
+        if token in _STOPWORDS or token.lower() in _NOISE_ENV_WORDS:
             continue
         if len(token) == 1 and not token.isdigit() and not token.isascii():
             # 单个汉字信息量太低（如"的""了"已过滤，这里挡住剩余的）

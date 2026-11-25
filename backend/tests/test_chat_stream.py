@@ -218,3 +218,35 @@ def test_sse_image_upload_validation_and_success(stream_env):
     assert any(n == "status" and d.get("node") == "vision" for n, d in events)
     msgs = client.get(f"/api/conversations/{conv_id}/messages", headers=headers).json()
     assert msgs[0]["has_image"] is True
+
+
+def test_sse_noisy_ocr_screenshot_reaches_kb_answer_with_citations(stream_env, monkeypatch):
+    client = stream_env["client"]
+    headers = stream_env["headers"]
+    conv_id = client.post("/api/conversations", json={}, headers=headers).json()["id"]
+
+    async def _fake_vision(*args, **kwargs) -> str:
+        return (
+            "502 Bad Gateway nginx/1.24.0 (Ubuntu 22.04.3 LTS) "
+            "2026/11/20 14:32:09 [error] 24518#0: *109 connect() failed (111: Connection refused) "
+            "while connecting to upstream http://47.94.101.23:8080/api/orders"
+        )
+
+    monkeypatch.setattr("app.routers.conversations.describe_image_safe", _fake_vision)
+
+    with client.stream(
+        "POST",
+        f"/api/conversations/{conv_id}/chat/stream",
+        data={"message": "这张报错截图是什么原因，怎么排查"},
+        files={"image": ("nginx502.png", PNG_BYTES, "image/png")},
+        headers=headers,
+    ) as resp:
+        assert resp.status_code == 200
+        events = _parse_sse_lines(list(resp.iter_lines()))
+
+    citations_events = [d for n, d in events if n == "citations"]
+    assert citations_events, f"应命中引用而非被瞬态 IP/PID 噪点压到 0.30 拒答: {events}"
+    assert citations_events[0]["rag_top_score"] >= 0.35
+
+    done_data = [d for n, d in events if n == "done"][-1]
+    assert done_data["decision_type"] == "kb_answer"
