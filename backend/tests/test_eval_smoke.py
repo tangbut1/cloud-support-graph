@@ -146,3 +146,112 @@ def test_admin_traces_and_eval_endpoints_rbac_and_data(client, conn, settings, m
 
     # 不存在的评测 id -> 404
     assert client.get("/api/admin/eval/runs/99999", headers=h_admin).status_code == 404
+
+
+def test_admin_trace_source_breakdown_preserved_under_user_filter(client, conn, settings):
+    seed(settings.app_db)
+    h_admin = login_headers(client, "admin")
+
+    record_trace(
+        conn,
+        conversation_id="user-conv-1",
+        user_id=1,
+        intent="kb_qa",
+        decision="kb_answer",
+        latency_ms=100,
+        prompt_tokens=50,
+        completion_tokens=60,
+    )
+    record_trace(
+        conn,
+        conversation_id="eval-batch-01",
+        user_id=1,
+        intent="kb_qa",
+        decision="kb_refuse",
+        latency_ms=900,
+        prompt_tokens=400,
+        completion_tokens=500,
+    )
+
+    # 默认切到 source=user 时：耗时与 Token 仅计真实流量，但跨源统计仍提示存在 eval_calls=1
+    user_view = client.get("/api/admin/traces?source=user", headers=h_admin).json()
+    assert user_view["total"] == 1
+    assert user_view["items"][0]["conversation_id"] == "user-conv-1"
+    assert user_view["aggregate"]["total_calls"] == 1
+    assert user_view["aggregate"]["avg_latency_ms"] == 100.0
+    assert user_view["aggregate"]["total_tokens"] == 110
+    assert user_view["aggregate"]["user_calls"] == 1
+    assert user_view["aggregate"]["eval_calls"] == 1
+
+
+def test_admin_trace_cleanup_rbac_ttl_dry_run_and_active_conv_protection(client, conn, settings):
+    seed(settings.app_db)
+    h_zs = login_headers(client, "zhangsan")
+    h_agent = login_headers(client, "wanggong")
+    h_admin = login_headers(client, "admin")
+
+    # 1. RBAC：客户与坐席均禁止调用清理接口
+    for h in (h_zs, h_agent):
+        resp = client.post("/api/admin/traces/cleanup", json={"source": "eval"}, headers=h)
+        assert resp.status_code == 403
+
+    # 2. 准备活跃会话、已关闭会话及新旧评测跑批 Trace
+    zs_id = int(conn.execute("SELECT id FROM users WHERE username = 'zhangsan'").fetchone()["id"])
+    conn.execute(
+        "INSERT INTO conversations (id, customer_id, thread_id, status, created_at, updated_at) "
+        "VALUES ('conv-active', ?, 'th-active', 'pending_human', '2020-01-01 00:00:00', '2020-01-01 00:00:00'), "
+        "       ('conv-closed', ?, 'th-closed', 'closed', '2020-01-01 00:00:00', '2020-01-01 00:00:00')",
+        (zs_id, zs_id),
+    )
+    t_active = record_trace(conn, conversation_id="conv-active", user_id=zs_id, intent="tool_ops", decision="hitl_takeover")
+    t_closed = record_trace(conn, conversation_id="conv-closed", user_id=zs_id, intent="kb_qa", decision="kb_answer")
+    t_eval_old = record_trace(conn, conversation_id="eval-old-01", user_id=zs_id, intent="kb_qa", decision="kb_answer")
+    t_eval_new = record_trace(conn, conversation_id="eval-new-01", user_id=zs_id, intent="kb_qa", decision="kb_refuse")
+
+    conn.execute(
+        "UPDATE agent_traces SET created_at = '2020-01-01 00:00:00' WHERE id IN (?, ?, ?)",
+        (t_active, t_closed, t_eval_old),
+    )
+    conn.execute(
+        "INSERT INTO messages (conversation_id, sender_role, content, trace_id, created_at) "
+        "VALUES ('conv-closed', 'assistant', '历史回答', ?, '2020-01-01 00:00:05')",
+        (t_closed,),
+    )
+    conn.commit()
+
+    # 3. dry_run=True + older_than_days=7：仅统计过期评测 Trace，不删库
+    dry = client.post(
+        "/api/admin/traces/cleanup",
+        json={"source": "eval", "older_than_days": 7, "dry_run": True},
+        headers=h_admin,
+    ).json()
+    assert dry["dry_run"] is True
+    assert dry["deleted_count"] == 1
+    assert dry["remaining_total"] == 4
+
+    # 4. 正式执行 TTL=7 天评测清理：仅删 t_eval_old，保留近期 t_eval_new
+    res_ttl = client.post(
+        "/api/admin/traces/cleanup",
+        json={"source": "eval", "older_than_days": 7, "dry_run": False},
+        headers=h_admin,
+    ).json()
+    assert res_ttl["deleted_count"] == 1
+    assert res_ttl["remaining_eval_calls"] == 1
+    assert res_ttl["remaining_user_calls"] == 2
+
+    # 5. source=all 且 older_than_days=0：清理剩余评测与已关闭会话 Trace（同步清空 messages.trace_id），但严格保留活跃会话 Trace
+    res_all = client.post(
+        "/api/admin/traces/cleanup",
+        json={"source": "all", "older_than_days": 0},
+        headers=h_admin,
+    ).json()
+    assert res_all["deleted_count"] == 2  # t_eval_new + t_closed
+    assert res_all["remaining_total"] == 1
+    assert res_all["remaining_user_calls"] == 1
+
+    leftover = conn.execute("SELECT id, conversation_id FROM agent_traces").fetchall()
+    assert len(leftover) == 1
+    assert leftover[0]["conversation_id"] == "conv-active"
+
+    msg_row = conn.execute("SELECT trace_id FROM messages WHERE conversation_id = 'conv-closed'").fetchone()
+    assert msg_row["trace_id"] is None

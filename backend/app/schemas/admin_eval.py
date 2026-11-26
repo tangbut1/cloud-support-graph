@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -36,6 +36,32 @@ class TraceListResponse(BaseModel):
     items: list[TraceItemOut]
     total: int
     aggregate: TraceAggregateOut
+
+
+class TraceCleanupRequest(BaseModel):
+    source: Literal["eval", "user", "all"] = Field(
+        default="eval",
+        description="清理范围：eval=仅评测跑批(eval-*)，user=非评测已关闭会话，all=两者",
+    )
+    older_than_days: int = Field(
+        default=7,
+        ge=0,
+        le=3650,
+        description="仅清理早于 N 天的记录；0 表示不限时间立即清理匹配记录",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="为 true 时仅预览可清理条数，不实际删除数据",
+    )
+
+
+class TraceCleanupResponse(BaseModel):
+    deleted_count: int
+    dry_run: bool = False
+    cutoff_utc: str | None = None
+    remaining_total: int
+    remaining_user_calls: int
+    remaining_eval_calls: int
 
 
 class EvalRunTriggerRequest(BaseModel):

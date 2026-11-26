@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Play, RefreshCw, Search } from "lucide-react";
+import { Play, RefreshCw, Search, Trash2 } from "lucide-react";
 import {
   api,
   EvalRunDetail,
@@ -25,12 +25,14 @@ const PRESET_OPTIONS = [
 export const AdminEvalPage: React.FC = () => {
   const [tab, setTab] = useState<"traces" | "eval" | "kb" | "faults">("traces");
 
-  // Trace 状态
+  // Trace 状态（默认优先展示非评测用户流量，避免历史评测跑批淹没真实会话）
   const [traceData, setTraceData] = useState<TraceListResponse | null>(null);
   const [traceError, setTraceError] = useState<string | null>(null);
+  const [traceMsg, setTraceMsg] = useState<string | null>(null);
+  const [cleanupBusy, setCleanupBusy] = useState(false);
   const [intentFilter, setIntentFilter] = useState("");
   const [decisionFilter, setDecisionFilter] = useState("");
-  const [sourceFilter, setSourceFilter] = useState<"all" | "user" | "eval">("all");
+  const [sourceFilter, setSourceFilter] = useState<"all" | "user" | "eval">("user");
   const [offset, setOffset] = useState(0);
   const pageSize = 15;
 
@@ -182,6 +184,24 @@ export const AdminEvalPage: React.FC = () => {
     }
   };
 
+  const handleCleanupEvalTraces = async () => {
+    setCleanupBusy(true);
+    setTraceMsg(null);
+    setTraceError(null);
+    try {
+      const res = await api.cleanupTraces({ source: "eval", older_than_days: 0 });
+      setTraceMsg(
+        `已清理 ${res.deleted_count} 条评测跑批 Trace（剩余非评测流量 ${res.remaining_user_calls} 条）`
+      );
+      setOffset(0);
+      await loadTraces();
+    } catch (err: any) {
+      setTraceError(err?.message || "清理评测 Trace 失败");
+    } finally {
+      setCleanupBusy(false);
+    }
+  };
+
   const pct = (v?: number | null) => (v == null ? "-" : `${(v * 100).toFixed(1)}%`);
 
   return (
@@ -271,8 +291,8 @@ export const AdminEvalPage: React.FC = () => {
                     }}
                     className="h-8 rounded border border-[#D1D5DB] px-2.5 bg-white text-[#111827]"
                   >
+                    <option value="user">仅非评测流量（默认）</option>
                     <option value="all">全部来源</option>
-                    <option value="user">仅非评测流量</option>
                     <option value="eval">仅评测跑批 (eval-*)</option>
                   </select>
                   <select
@@ -306,15 +326,35 @@ export const AdminEvalPage: React.FC = () => {
                     <option value="hitl_takeover">hitl_takeover</option>
                   </select>
                 </div>
-                <button
-                  type="button"
-                  onClick={loadTraces}
-                  className="inline-flex items-center gap-1.5 text-[12px] text-[#6B7280] hover:text-[#111827]"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  刷新
-                </button>
+                <div className="flex items-center gap-3">
+                  {(traceData?.aggregate.eval_calls ?? 0) > 0 && (
+                    <button
+                      type="button"
+                      disabled={cleanupBusy}
+                      onClick={handleCleanupEvalTraces}
+                      className="inline-flex items-center gap-1 text-[12px] text-[#6B7280] hover:text-red-600 disabled:opacity-50"
+                      title="清理历史评测跑批产生的 eval-* 追踪记录，不影响真实客户会话"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      清理评测跑批 ({traceData?.aggregate.eval_calls})
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={loadTraces}
+                    className="inline-flex items-center gap-1.5 text-[12px] text-[#6B7280] hover:text-[#111827]"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    刷新
+                  </button>
+                </div>
               </div>
+
+              {traceMsg && (
+                <div className="px-4 py-2 bg-emerald-50 border-b border-emerald-100 text-[12.5px] text-emerald-700">
+                  {traceMsg}
+                </div>
+              )}
 
               {traceError ? (
                 <div className="py-10 text-center text-[13px] text-red-600">

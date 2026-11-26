@@ -386,9 +386,25 @@ export const api = {
     if (params.offset != null) qs.set("offset", String(params.offset));
     if (params.intent) qs.set("intent", params.intent);
     if (params.decision) qs.set("decision", params.decision);
-    if (params.source && params.source !== "all") qs.set("source", params.source);
+    if (params.source) qs.set("source", params.source);
     return apiFetch<TraceListResponse>(`/api/admin/traces?${qs.toString()}`);
   },
+  cleanupTraces: (payload: {
+    source?: "eval" | "user" | "all";
+    older_than_days?: number;
+    dry_run?: boolean;
+  }) =>
+    apiFetch<{
+      deleted_count: number;
+      dry_run: boolean;
+      cutoff_utc?: string | null;
+      remaining_total: number;
+      remaining_user_calls: number;
+      remaining_eval_calls: number;
+    }>("/api/admin/traces/cleanup", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   listEvalRuns: () => apiFetch<EvalRunSummary[]>("/api/admin/eval/runs"),
   getEvalRun: (id: number) => apiFetch<EvalRunDetail>(`/api/admin/eval/runs/${id}`),
   triggerEvalRun: (payload: { run_name?: string; limit?: number }) =>

@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -23,6 +23,8 @@ from app.schemas.admin_eval import (
     EvalRunTriggerRequest,
     EvalRunTriggerResponse,
     TraceAggregateOut,
+    TraceCleanupRequest,
+    TraceCleanupResponse,
     TraceItemOut,
     TraceListResponse,
 )
@@ -120,19 +122,23 @@ def list_traces(
     conn: sqlite3.Connection = Depends(get_db),
 ) -> TraceListResponse:
     _ = admin
-    conditions: list[str] = []
-    params: list[object] = []
+    base_conditions: list[str] = []
+    base_params: list[object] = []
     if intent:
-        conditions.append("intent = ?")
-        params.append(intent)
+        base_conditions.append("intent = ?")
+        base_params.append(intent)
     if decision:
-        conditions.append("decision = ?")
-        params.append(decision)
+        base_conditions.append("decision = ?")
+        base_params.append(decision)
+
+    conditions = list(base_conditions)
+    params = list(base_params)
     if source == "eval":
         conditions.append("conversation_id LIKE 'eval-%'")
     elif source == "user":
         conditions.append("(conversation_id IS NULL OR conversation_id NOT LIKE 'eval-%')")
 
+    base_where_sql = (" WHERE " + " AND ".join(base_conditions)) if base_conditions else ""
     where_sql = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
     total = int(
@@ -150,13 +156,21 @@ def list_traces(
     agg_row = conn.execute(
         f"""
         SELECT COUNT(*) AS total_calls,
-               COALESCE(SUM(CASE WHEN conversation_id LIKE 'eval-%' THEN 1 ELSE 0 END), 0) AS eval_calls,
-               COALESCE(SUM(CASE WHEN conversation_id IS NULL OR conversation_id NOT LIKE 'eval-%' THEN 1 ELSE 0 END), 0) AS user_calls,
                COALESCE(AVG(latency_ms), 0.0) AS avg_latency_ms,
                COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0) AS total_tokens
         FROM agent_traces{where_sql}
         """,
         params,
+    ).fetchone()
+
+    # 跨源流量计数基于 intent/decision 基线统计，使前端默认切到 source=user 时仍能感知评测跑批积压量
+    source_split_row = conn.execute(
+        f"""
+        SELECT COALESCE(SUM(CASE WHEN conversation_id LIKE 'eval-%' THEN 1 ELSE 0 END), 0) AS eval_calls,
+               COALESCE(SUM(CASE WHEN conversation_id IS NULL OR conversation_id NOT LIKE 'eval-%' THEN 1 ELSE 0 END), 0) AS user_calls
+        FROM agent_traces{base_where_sql}
+        """,
+        base_params,
     ).fetchone()
 
     dist_rows = conn.execute(
@@ -192,12 +206,81 @@ def list_traces(
         total=total,
         aggregate=TraceAggregateOut(
             total_calls=int(agg_row["total_calls"]),
-            user_calls=int(agg_row["user_calls"]),
-            eval_calls=int(agg_row["eval_calls"]),
+            user_calls=int(source_split_row["user_calls"]),
+            eval_calls=int(source_split_row["eval_calls"]),
             avg_latency_ms=round(float(agg_row["avg_latency_ms"]), 2),
             total_tokens=int(agg_row["total_tokens"]),
             decision_distribution={r["dec"]: int(r["cnt"]) for r in dist_rows},
         ),
+    )
+
+
+@router.post(
+    "/traces/cleanup",
+    response_model=TraceCleanupResponse,
+    summary="按来源与保留天数清理历史 Trace（保护未关闭活跃会话，仅管理员）",
+)
+def cleanup_traces(
+    payload: TraceCleanupRequest,
+    admin: AdminOnly,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> TraceCleanupResponse:
+    _ = admin
+    conditions: list[str] = []
+    params: list[object] = []
+
+    if payload.source == "eval":
+        conditions.append("conversation_id LIKE 'eval-%'")
+    elif payload.source == "user":
+        conditions.append("(conversation_id IS NULL OR conversation_id NOT LIKE 'eval-%')")
+
+    # 安全保护：当范围涉及非评测流量时，绝不删除仍处于处理中/排队中的活跃会话关联 Trace
+    if payload.source in ("user", "all"):
+        conditions.append(
+            "(conversation_id IS NULL OR conversation_id NOT IN "
+            "(SELECT id FROM conversations WHERE status != 'closed'))"
+        )
+
+    cutoff_utc: str | None = None
+    if payload.older_than_days > 0:
+        cutoff_utc = (
+            datetime.now(timezone.utc) - timedelta(days=payload.older_than_days)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        conditions.append("created_at < ?")
+        params.append(cutoff_utc)
+
+    where_sql = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    id_rows = conn.execute(f"SELECT id FROM agent_traces{where_sql}", params).fetchall()
+    target_ids = [int(r["id"]) for r in id_rows]
+
+    if target_ids and not payload.dry_run:
+        placeholders = ",".join("?" for _ in target_ids)
+        conn.execute(
+            f"UPDATE messages SET trace_id = NULL WHERE trace_id IN ({placeholders})",
+            target_ids,
+        )
+        conn.execute(
+            f"DELETE FROM agent_traces WHERE id IN ({placeholders})",
+            target_ids,
+        )
+        conn.commit()
+
+    rem = conn.execute(
+        """
+        SELECT COUNT(*) AS total,
+               COALESCE(SUM(CASE WHEN conversation_id LIKE 'eval-%' THEN 1 ELSE 0 END), 0) AS eval_calls,
+               COALESCE(SUM(CASE WHEN conversation_id IS NULL OR conversation_id NOT LIKE 'eval-%' THEN 1 ELSE 0 END), 0) AS user_calls
+        FROM agent_traces
+        """
+    ).fetchone()
+
+    return TraceCleanupResponse(
+        deleted_count=len(target_ids),
+        dry_run=payload.dry_run,
+        cutoff_utc=cutoff_utc,
+        remaining_total=int(rem["total"]),
+        remaining_user_calls=int(rem["user_calls"]),
+        remaining_eval_calls=int(rem["eval_calls"]),
     )
 
 
