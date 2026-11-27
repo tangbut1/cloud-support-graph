@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections import Counter
+from pathlib import Path
 
 import pytest
 
 from app.agent.trace_logger import record_trace
 from app.db.seed import seed
+from app.eval.report import build_eval_report_payload, format_eval_report, run_report_cli
 from app.eval.runner import load_dataset, run_eval
 from tests.conftest import login_headers, make_user
 
@@ -255,3 +257,84 @@ def test_admin_trace_cleanup_rbac_ttl_dry_run_and_active_conv_protection(client,
 
     msg_row = conn.execute("SELECT trace_id FROM messages WHERE conversation_id = 'conv-closed'").fetchone()
     assert msg_row["trace_id"] is None
+
+
+def test_eval_report_cli_graceful_missing_db_without_disk_pollution(tmp_path):
+    missing_db = tmp_path / "fresh_clone_no_app.db"
+    assert not missing_db.exists()
+
+    # 1. 默认无 --run-id：优雅降级输出 18 题检索 A/B 基线与指引，且不在磁盘创建空 app.db
+    code, text_out = run_report_cli(db_path=missing_db)
+    assert code == 0
+    assert not missing_db.exists(), "只读报告命令不应在全新克隆环境残留空白数据库文件"
+    assert "尚未生成端到端评测批次记录" in text_out
+    assert "0.35" in text_out
+    assert "100.0%" in text_out
+
+    # 2. JSON 模式同样可降级输出 ab_only 结构
+    code_json, json_out = run_report_cli(db_path=missing_db, as_json=True)
+    assert code_json == 0
+    parsed = __import__("json").loads(json_out)
+    assert parsed["status"] == "ab_only"
+    assert parsed["eval_run"] is None
+    assert any(r["threshold"] == 0.35 and r["overall_acc"] == 1.0 for r in parsed["ab_thresholds"])
+
+    # 3. 显式指定不存在的 --run-id 或开启 --strict：必须返回非零退出码防静默吞错
+    code_missing_id, err_msg = run_report_cli(db_path=missing_db, run_id=999)
+    assert code_missing_id == 1
+    assert "run_id=999" in err_msg
+
+    code_strict, _ = run_report_cli(db_path=missing_db, strict=True)
+    assert code_strict == 1
+
+
+def test_eval_report_json_export_includes_badcases_and_auto_indexes_kb(conn, tmp_path):
+    import json
+
+    # 故意不预先调用 index_all(conn)，验证报告工具在空知识库表上会自动补齐索引
+    cur = conn.execute(
+        """
+        INSERT INTO eval_runs (
+            run_name, config_json, status, total_cases, error_cases,
+            intent_acc, refusal_acc, safe_routing_rate, security_block_rate,
+            tool_acc, tool_ops_acc, hitl_escalate_acc, avg_faithfulness,
+            citation_hit_rate, judge_mode, avg_latency_ms, created_at
+        ) VALUES (
+            'JSON导出与Badcase测试',
+            '{"llm_model_name":"deepseek-v4.1-flash","rag_min_score":0.35,"total_prompt_tokens":300,"total_completion_tokens":450}',
+            'completed', 2, 0, 0.5, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+            'citation_heuristic', 210.5, '2026-11-27 10:00:00'
+        )
+        """
+    )
+    rid = int(cur.lastrowid)
+    conn.execute(
+        """
+        INSERT INTO eval_case_results (run_id, case_id, category, passed, expected_json, actual_json, judge_score, reason)
+        VALUES
+            (?, 'kb-01', 'kb_answerable', 1, '{"intent":"kb_qa","decision":"kb_answer"}', '{"intent":"kb_qa","decision":"kb_answer","latency_ms":180.0}', 1.0, '通过'),
+            (?, 'ref-01', 'kb_unanswerable', 0, '{"intent":"kb_qa","decision":"kb_refuse"}', '{"intent":"escalate_hitl","decision":"hitl_takeover","latency_ms":241.0}', 0.0, '意图不符(期望 kb_qa, 实际 escalate_hitl)')
+        """,
+        (rid, rid),
+    )
+    conn.commit()
+
+    # 文本报告自动补齐索引后 0.35 档应为 100.0% 而非 0.0%
+    txt = format_eval_report(conn, run_id=rid)
+    assert "10/10 (100.0%)" in txt
+    assert "ref-01: 意图不符" in txt
+
+    # 结构化 JSON 报告与文件落盘
+    payload = build_eval_report_payload(conn, run_id=rid)
+    assert payload["status"] == "full"
+    assert payload["eval_run"]["passed_cases"] == 1
+    assert len(payload["eval_run"]["badcases"]) == 1
+    assert payload["eval_run"]["badcases"][0]["case_id"] == "ref-01"
+
+    out_file = tmp_path / "artifacts" / "eval_report.json"
+    db_file = Path(conn.execute("PRAGMA database_list").fetchone()[2])
+    code, _ = run_report_cli(db_path=db_file, run_id=rid, as_json=True, output_path=out_file)
+    assert code == 0
+    saved = json.loads(out_file.read_text(encoding="utf-8"))
+    assert saved["eval_run"]["run_id"] == rid
+    assert saved["eval_run"]["badcases"][0]["actual"]["decision"] == "hitl_takeover"
